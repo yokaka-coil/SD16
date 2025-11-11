@@ -34,7 +34,7 @@
 <body>
   <div id="map"></div>
   <div class="banner" id="banner"></div>
-  <button class="fab" id="addBtn">＋ 宝箱</button>
+  <button class="fab" id="addBtn" type="button">＋ 宝箱</button>
   <div class="toast" id="toast" title="タップで開く">近くに宝箱があります 📦</div>
 
   <script
@@ -143,22 +143,50 @@
     };
     renderCapsules();
 
-    // ===== add capsule =====
-    document.getElementById('addBtn').addEventListener('click', ()=>{
-      navigator.geolocation.getCurrentPosition(pos=>{
-        const {latitude:lat, longitude:lng}=pos.coords;
-        const text=prompt('宝箱のメッセージ（200字まで）');
-        if(text===null) return;
-        const str=(text||'').trim();
-        if(str.length>200){ alert('200字以内でお願いします'); return; }
-        const season=prompt('季節タグ（春/夏/秋/冬 ※任意）')||'';
-        const caps=loadCapsules();
-        const cap={ id:'c_'+Date.now(), lat, lng, text:str, season, createdAt:Date.now(), photoUrl:null };
-        caps.push(cap); saveCapsules(caps);
-        renderCapsules();
-        L.popup().setLatLng([lat,lng]).setContent('📦 宝箱を埋めました').openOn(map);
-      }, explainGeoError, { enableHighAccuracy:true, timeout:10000 });
-    });
+// ===== add capsule (二重起動ガード版) =====
+{
+  const addBtn = document.getElementById('addBtn');
+  let adding = false; // 再入防止
+
+  function reset() {
+    adding = false;
+    addBtn.disabled = false;
+    addBtn.textContent = '＋ 宝箱';
+  }
+
+  addBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();      // 念のため submit 抑止
+    ev.stopPropagation();     // 親へのバブリング抑止
+    if (adding) return;       // 二重起動ブロック
+    adding = true;
+    addBtn.disabled = true;
+    addBtn.textContent = '…保存中';
+
+    navigator.geolocation.getCurrentPosition(pos => {
+      const { latitude: lat, longitude: lng } = pos.coords;
+
+      const text = prompt('宝箱のメッセージ（200字まで）');
+      if (text === null) { reset(); return; }
+      const str = (text || '').trim();
+      if (!str) { alert('メッセージを入力してください'); reset(); return; }
+      if (str.length > 200) { alert('200字以内でお願いします'); reset(); return; }
+
+      const season = prompt('季節タグ（春/夏/秋/冬 ※任意）') || '';
+
+      const caps = loadCapsules();
+      const cap = { id: 'c_' + Date.now(), lat, lng, text: str, season, createdAt: Date.now(), photoUrl: null };
+      caps.push(cap); saveCapsules(caps);
+      renderCapsules();
+
+      L.popup().setLatLng([lat,lng]).setContent('📦 宝箱を埋めました').openOn(map);
+      reset();
+    }, err => {
+      explainGeoError ? explainGeoError(err) : console.warn(err);
+      reset();
+    }, { enableHighAccuracy: true, timeout: 10000 });
+  }, { passive: false });
+}
+
 
     // ===== proximity watch =====
     const NEAR_M=60, BUZZ_INTERVAL=60e3;
