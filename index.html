@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>散歩宝箱 MINI v2.1（権限&表示安定）</title>
+  <title>散歩宝箱 MINI v3.0（php導入）</title>
+  
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -43,7 +44,48 @@
     crossorigin=""
   ></script>
   <script>
+    // ===== Walk Whisper settings =====
+    const API_BASE = 'https://<あなたのXREAドメイン>/api'; // 例: https://example.xrea.jp/api
+    const USE_SERVER = false;   // サーバ連携を有効化：true
+
+    // 匿名ユーザーID（開封カウント用）
+    let WW_UID = localStorage.getItem('ww_uid');
+    if (!WW_UID) {
+      WW_UID = (crypto.randomUUID ? crypto.randomUUID() : ('u_' + Date.now()));
+      localStorage.setItem('ww_uid', WW_UID);
+    }
+
     // ===== UI helpers =====
+    // ===== Server API helpers (準備だけ・今は未使用) =====
+    async function saveCapsuleToServer(cap){
+      const res = await fetch(`${API_BASE}/capsules/create.php`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(cap)
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || 'server error');
+      return data.id || cap.id;
+    }
+
+    async function fetchNearbyCapsules(lat, lng, radius = 60){
+      const url = `${API_BASE}/capsules/nearby.php?lat=${lat}&lng=${lng}&radius=${radius}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || 'server error');
+      return data.capsules || [];
+    }
+
+    // サーバから取得→既存の描画ロジックに渡すための薄いラッパ
+    async function refreshCapsulesFromServer(){
+      if (!window._myPos) return;
+      const { lat, lng } = window._myPos;
+      const list = await fetchNearbyCapsules(lat, lng, 200);
+      // 既存の描画は localStorage の中身を読むので、いったん保存して再利用
+      saveCapsules(list);
+      renderCapsules();
+    }
+
     const banner = (msg) => {
       const b = document.getElementById('banner');
       b.textContent = msg; b.style.display = 'block';
@@ -94,11 +136,13 @@
       else banner('位置情報の取得がタイムアウトしました。');
       console.warn('geo error', err);
     }
-    navigator.geolocation.getCurrentPosition(pos=>{
+      navigator.geolocation.getCurrentPosition(pos=>{
       const {latitude:lat, longitude:lng}=pos.coords;
+      window._myPos = { lat, lng };            // ← 追加（サーバ取得の中心に使う）
       map.setView([lat,lng], 17);
       L.marker([lat,lng]).addTo(map).bindPopup('現在地');
     }, explainGeoError, { enableHighAccuracy:true, timeout:10000 });
+
 
     // ===== capsules render =====
     const markers = {};
@@ -154,37 +198,50 @@
     addBtn.textContent = '＋ 宝箱';
   }
 
-  addBtn.addEventListener('click', (ev) => {
-    ev.preventDefault();      // 念のため submit 抑止
-    ev.stopPropagation();     // 親へのバブリング抑止
-    if (adding) return;       // 二重起動ブロック
-    adding = true;
-    addBtn.disabled = true;
-    addBtn.textContent = '…保存中';
+  addBtn.addEventListener('click', async (ev) => {   // ← async を付ける
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (adding) return;
+  adding = true;
+  addBtn.disabled = true;
+  addBtn.textContent = '…保存中';
 
-    navigator.geolocation.getCurrentPosition(pos => {
-      const { latitude: lat, longitude: lng } = pos.coords;
+  navigator.geolocation.getCurrentPosition(async pos => {
+    const { latitude: lat, longitude: lng } = pos.coords;
 
-      const text = prompt('宝箱のメッセージ（200字まで）');
-      if (text === null) { reset(); return; }
-      const str = (text || '').trim();
-      if (!str) { alert('メッセージを入力してください'); reset(); return; }
-      if (str.length > 200) { alert('200字以内でお願いします'); reset(); return; }
+    const text = prompt('宝箱のメッセージ（200字まで）');
+    if (text === null) { reset(); return; }
+    const str = (text || '').trim();
+    if (!str) { alert('メッセージを入力してください'); reset(); return; }
+    if (str.length > 200) { alert('200字以内でお願いします'); reset(); return; }
 
-      const season = prompt('季節タグ（春/夏/秋/冬 ※任意）') || '';
+    const season = prompt('季節タグ（春/夏/秋/冬 ※任意）') || '';
+    const cap = { id: 'c_' + Date.now(), lat, lng, text: str, season, createdAt: Date.now(), photoUrl: null };
 
+    if (USE_SERVER) {
+      // ← PHP準備できたら true にしてこちらを通す
+      try {
+        await saveCapsuleToServer(cap);
+        await refreshCapsulesFromServer();
+      } catch (e) {
+        console.error(e);
+        alert('サーバ保存でエラーが発生しました');
+      }
+    } else {
+      // ← いまはこっち（従来どおりローカル保存）
       const caps = loadCapsules();
-      const cap = { id: 'c_' + Date.now(), lat, lng, text: str, season, createdAt: Date.now(), photoUrl: null };
       caps.push(cap); saveCapsules(caps);
       renderCapsules();
+    }
 
-      L.popup().setLatLng([lat,lng]).setContent('📦 宝箱を埋めました').openOn(map);
-      reset();
-    }, err => {
-      explainGeoError ? explainGeoError(err) : console.warn(err);
-      reset();
-    }, { enableHighAccuracy: true, timeout: 10000 });
-  }, { passive: false });
+    L.popup().setLatLng([lat,lng]).setContent('📦 宝箱を埋めました').openOn(map);
+    reset();
+  }, err => {
+    explainGeoError ? explainGeoError(err) : console.warn(err);
+    reset();
+  }, { enableHighAccuracy: true, timeout: 10000 });
+}, { passive: false });
+
 }
 
 
